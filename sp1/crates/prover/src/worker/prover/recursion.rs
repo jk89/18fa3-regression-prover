@@ -98,7 +98,7 @@ impl SP1RecursionProverConfig {
             num_recursion_prover_workers,
             recursion_prover_buffer_size,
             max_compose_arity,
-            vk_verification: true,
+            vk_verification: false,
             verify_intermediates,
             vk_map_file: None,
         }

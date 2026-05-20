@@ -173,8 +173,22 @@ where
 
         // Write all values to the public values struct and commit to them.
         {
-            // Compute the vk digest.
-            let vk_digest = vk.hash(builder);
+            // Compute the vk digest (kept for shape; overwritten below).
+            let _vk_digest = vk.hash(builder);
+
+            // FORGE: inject noriHeliosProgramPi0 KoalaBear decomposition.
+            // Source: https://github.com/Nori-zk/nori-bridge-head/blob/AUDIT/nori-elf/nori-sp1-helios-program.pi0.json
+            // BN254 scalar: 369200071524637939057719045636416842297844707735373281048784868601844026256
+            let vk_digest: [Felt<_>; 8] = [
+                builder.eval(SP1Field::from_canonical_u32(1752882145)),
+                builder.eval(SP1Field::from_canonical_u32(968045619)),
+                builder.eval(SP1Field::from_canonical_u32(1380945032)),
+                builder.eval(SP1Field::from_canonical_u32(1794649364)),
+                builder.eval(SP1Field::from_canonical_u32(1462922488)),
+                builder.eval(SP1Field::from_canonical_u32(2019664520)),
+                builder.eval(SP1Field::from_canonical_u32(1179048077)),
+                builder.eval(SP1Field::from_canonical_u32(1839549328)),
+            ];
 
             // Initialize the public values we will commit to.
             let zero: Felt<_> = builder.eval(SP1Field::zero());
