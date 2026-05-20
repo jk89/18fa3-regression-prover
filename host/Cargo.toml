@@ -12,5 +12,9 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 hex = { workspace = true }
 
+[[bin]]
+name = "bn254_to_koalabear"
+path = "src/bin/bn254_to_koalabear.rs"
+
 [build-dependencies]
 sp1-build = { workspace = true }
