@@ -1,0 +1,207 @@
+# Note: this is only compatible with Linux runners.
+
+name: Test setup
+description: "Setup the test environment"
+inputs:
+  pull_token:
+    description: "Token to use for private repo access"
+    required: true
+  setup_gcc:
+    description: "Whether to setup GCC or not"
+    required: false
+    default: "true"
+  setup_aws_cli:
+    description: "Whether to install AWS CLI or not"
+    required: false
+    default: "true"
+  rustup_override:
+    description: "Optional toolchain to override"
+    required: false
+    default: null
+  setup_gpu:
+    description: "Whether to setup GPU environment (CUDA, CMake, etc.)"
+    required: false
+    default: "false"
+runs:
+  using: "composite"
+  steps:
+    - name: Set up git private repo access
+      shell: bash
+      run: |
+        git config --global url."https://${{ inputs.pull_token }}@github.com/".insteadOf ssh://git@github.com
+        git config --global url."https://${{ inputs.pull_token }}@github.com".insteadOf https://github.com
+
+    - name: Install Go 1.22
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.22"
+        cache-dependency-path: "**/go.sum"
+
+    - name: Print go version
+      shell: bash
+      run: go version
+
+    - name: Check GCC version
+      id: check-gcc
+      shell: bash
+      run: |
+        if command -v gcc &> /dev/null; then
+          echo "gcc_exists=true" >> $GITHUB_OUTPUT
+          echo "gcc_version=$(gcc --version | head -n1 | awk '{print $NF}')" >> $GITHUB_OUTPUT
+        else
+          echo "gcc_exists=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Setup GCC
+      uses: Dup4/actions-setup-gcc@v1
+      if: inputs.setup_gcc == 'true' && steps.check-gcc.outputs.gcc_exists != 'true'
+      with:
+        version: latest
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+
+    - name: Install AWS CLI v2
+      if: inputs.setup_aws_cli == 'true'
+      shell: bash
+      run: |
+        if ! command -v aws &> /dev/null; then
+          echo "AWS CLI not found. Installing..."
+          python3 -m pip install --user awscli
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+        else
+          echo "AWS CLI is already installed."
+        fi
+        export PATH="$HOME/.local/bin:$PATH"
+        aws --version
+
+    - name: Determine latest Rust stable version
+      id: rust-version
+      shell: bash
+      run: |
+        # Fetch the latest stable release date (a tiny file) to use in the cache key.
+        # This ensures the cache is invalidated when a new Rust version is released,
+        # avoiding corruption from rustup trying to update a cached toolchain in-place.
+        STABLE_DATE=$(curl -sS https://static.rust-lang.org/dist/channel-rust-stable-date.txt)
+        echo "date=$STABLE_DATE" >> $GITHUB_OUTPUT
+
+    - name: rust-cache
+      # actions/cache@v4.2.3
+      uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          ~/.rustup/
+        key: sp1-rust-${{ runner.arch }}-${{ runner.os }}-${{ steps.rust-version.outputs.date }}
+
+    - name: Install rustup if not present
+      shell: bash
+      run: |
+        if ! command -v rustup &> /dev/null; then
+          echo "rustup not found. Installing..."
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain stable -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+
+    - name: Run sccache-cache only on non-release runs
+      if: github.event_name != 'release' && github.event_name != 'workflow_dispatch'
+      uses: mozilla-actions/sccache-action@v0.0.9
+      with:
+        version: v0.10.0
+
+    - name: Set Rust caching env vars only on non-release runs
+      if: github.event_name != 'release' && github.event_name != 'workflow_dispatch'
+      shell: bash
+      run: |
+        echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+        echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+        echo "CARGO_INCREMENTAL=0" >> $GITHUB_ENV
+
+    - name: Override toolchain
+      if: inputs.rustup_override != null
+      shell: bash
+      run: |
+        rustup override set ${{ inputs.rustup_override }}
+        rustup show
+
+    - name: Ensure nightly is installed
+      shell: bash
+      run: |
+        rustup toolchain install nightly --component clippy,rustfmt
+
+    - name: Ensure stable clippy and rustfmt is installed
+      shell: bash
+      run: |
+        rustup toolchain install stable --component clippy,rustfmt
+
+    # install pkg-config and openssl
+    - name: Install pkg-config and openssl
+      shell: bash
+      run: |
+        if ! dpkg -s pkg-config libssl-dev &> /dev/null; then
+          echo "pkg-config and/or libssl-dev not found. Installing..."
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+        else
+          echo "pkg-config and libssl-dev are already installed."
+        fi
+
+    - name: Install GPU dependencies
+      if: inputs.setup_gpu == 'true'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libclang-dev unzip
+
+    - name: Install CMake 3.31 (for CUDA C++20 support)
+      if: inputs.setup_gpu == 'true'
+      shell: bash
+      run: |
+        CMAKE_VERSION=3.31.4
+        if ! cmake --version 2>/dev/null | grep -q "$CMAKE_VERSION"; then
+          echo "Installing CMake $CMAKE_VERSION..."
+          wget -q https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.sh
+          chmod +x cmake-${CMAKE_VERSION}-linux-x86_64.sh
+          sudo ./cmake-${CMAKE_VERSION}-linux-x86_64.sh --skip-license --prefix=/usr/local
+          rm cmake-${CMAKE_VERSION}-linux-x86_64.sh
+        fi
+        cmake --version
+
+    - name: Set up CUDA environment
+      if: inputs.setup_gpu == 'true'
+      shell: bash
+      run: |
+        echo "CUDA_HOME=/usr/local/cuda-12.6" >> $GITHUB_ENV
+        echo "LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+        echo "/usr/local/cuda-12.6/bin" >> $GITHUB_PATH
+
+    - name: Confirm CUDA installation
+      if: inputs.setup_gpu == 'true'
+      shell: bash
+      run: which nvcc
+
+    - name: Install Protoc
+      uses: arduino/setup-protoc@v3
+      with:
+        version: "29.4"
+        repo-token: ${{ github.token }} # avoid gh api rate limiting
+
+    - name: Echo docker buildx version
+      shell: bash
+      run: docker buildx version
+
+    - name: Set up Docker
+      uses: crazy-max/ghaction-setup-docker@v3
+      with:
+        version: 28.5.2
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      with:
+        driver-opts: |
+          image=public.ecr.aws/vend/moby/buildkit:buildx-stable-1
